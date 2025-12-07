@@ -3,226 +3,278 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>CS2 Radar</title>
+    <title>Radarik</title>
     <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
+        * { margin: 0; padding: 0; box-sizing: border-box; }
         body {
-            background: #000;
-            color: #fff;
-            font-family: sans-serif;
-            overflow: hidden;
-            height: 100vh;
-            width: 100vw;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            background: #000; color: #fff; font-family: "Arial", sans-serif;
+            overflow: hidden; height: 100vh; width: 100vw;
+            display: flex; align-items: center; justify-content: center;
         }
 
-        #radar-container {
-            width: 100%;
-            height: 100%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+        #radar-wrapper {
             position: relative;
+            height: 95vh;
+            width: 95vh;
+            display: flex; justify-content: center; align-items: center;
         }
 
         #radar-img {
-            max-width: 100%;
-            max-height: 100%;
+            height: 100%; width: 100%;
             object-fit: contain;
+            display: block;
+        }
+
+        #dots-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            pointer-events: none; 
+        }
+
+        .player-dot {
+            position: absolute;
+            width: 2.8%; 
+            height: 2.8%;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 100;
+            cursor: pointer;
+            border: 0.2vh solid rgba(0,0,0,0.6);
+            transition: top 0.05s linear, left 0.05s linear;
+            pointer-events: auto; 
+        }
+
+        .dot-inner { width: 100%; height: 100%; border-radius: 50%; pointer-events: none; }
+
+        .player-name {
+            position: absolute;
+            top: -100%; 
+            left: 50%;
+            transform: translateX(-50%);
+            font-size: 2.2vh; 
+            font-weight: 900;
+            color: white;
+            text-shadow: 0.15vh 0.15vh 0 #000, -0.15vh -0.15vh 0 #000;
+            white-space: nowrap;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .t-team .dot-inner { background: #dcb43c; border: 0.2vh solid #DC3C3C; background-color: #DC3C3C;}
+        .ct-team .dot-inner { background: #3c64dc; border: 0.2vh solid #3C64DC; background-color: #3C64DC;}
+
+        .selected-ring {
+            position: absolute;
+            top: 50%; left: 50%;
+            transform: translate(-50%, -50%);
+            width: 160%; height: 160%;
+            border: 0.4vh solid #FFFF00;
+            border-radius: 50%;
+            box-shadow: 0 0 1vh #FFFF00;
+            display: none;
+            pointer-events: none;
+            z-index: 5;
+        }
+        .player-dot.active .selected-ring { display: block; }
+
+        .bomb-dot {
+            position: absolute;
+            width: 3.5%; height: 3.5%;
+            background: red;
+            border: 0.2vh solid white;
+            border-radius: 50%;
+            transform: translate(-50%, -50%);
+            z-index: 90;
+            transition: top 0.05s linear, left 0.05s linear;
+            display: flex; align-items: center; justify-content: center;
+            font-weight: bold; font-size: 1.5vh;
+            pointer-events: none;
         }
 
         #player-panel {
-            position: absolute;
-            top: 20px;
-            left: 20px;
-            display: flex;
-            flex-direction: column;
-            gap: 5px;
-            transition: transform 0.3s ease;
+            position: absolute; top: 20px; left: 20px;
+            display: flex; flex-direction: column; gap: 5px; z-index: 200;
         }
-
-        #player-panel.hidden #player-list {
-            display: none;
-        }
-
+        #player-panel.hidden #player-list, #player-panel.hidden #controls { display: none; }
+        
         #toggle-btn {
-            width: 30px;
-            height: 30px;
-            background: rgba(50, 50, 50, 0.8);
-            color: white;
-            border: 1px solid #444;
-            border-radius: 4px;
-            cursor: pointer;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            user-select: none;
+            width: 30px; height: 30px; background: rgba(50,50,50,0.8);
+            color: white; border: 1px solid #444; border-radius: 4px;
+            cursor: pointer; display: flex; align-items: center; justify-content: center;
+            font-weight: bold; user-select: none;
         }
-
-        #toggle-btn:hover {
-            background: rgba(80, 80, 80, 0.9);
+        #controls { display: flex; gap: 5px; margin-bottom: 5px; }
+        .team-btn {
+            flex: 1; padding: 5px; background: rgba(0,0,0,0.7);
+            border: 1px solid #444; color: #888; font-size: 11px;
+            cursor: pointer; border-radius: 4px; text-align: center; font-weight: bold;
         }
-
+        .team-btn.active { color: #fff; border-color: #fff; }
+        .btn-t.active { background: rgba(220, 60, 60, 0.4); }
+        .btn-ct.active { background: rgba(60, 100, 220, 0.4); }
         #player-list {
-            background: rgba(0, 0, 0, 0.7);
-            padding: 10px;
-            border-radius: 8px;
-            width: 200px;
-            max-height: 85vh;
-            overflow-y: auto;
-            backdrop-filter: blur(5px);
+            background: rgba(0,0,0,0.7); padding: 10px; border-radius: 8px;
+            width: 220px; max-height: 80vh; overflow-y: auto; backdrop-filter: blur(5px);
             border: 1px solid #333;
         }
-
-        .team-title {
-            font-size: 12px;
-            font-weight: bold;
-            color: #888;
-            margin-top: 10px;
-            margin-bottom: 5px;
-            text-transform: uppercase;
-        }
-
+        .team-title { font-size: 12px; font-weight: bold; color: #888; margin: 10px 0 5px; text-transform: uppercase; }
         .player-item {
-            padding: 8px 10px;
-            cursor: pointer;
-            font-size: 14px;
-            border-radius: 4px;
-            margin-bottom: 2px;
-            transition: background 0.2s;
-            display: flex;
-            justify-content: space-between;
+            padding: 8px 10px; cursor: pointer; font-size: 14px; border-radius: 4px;
+            margin-bottom: 2px; display: flex; justify-content: space-between;
         }
-
-        .player-item:hover {
-            background: rgba(255, 255, 255, 0.1);
-        }
-
-        .player-item.selected {
-            background: rgba(255, 255, 0, 0.2);
-            border: 1px solid rgba(255, 255, 0, 0.5);
-            font-weight: bold;
-        }
-
-        .t-color { color: #ff6b6b; }
-        .ct-color { color: #5096ff; }
-        .hp-text { font-size: 12px; color: #aaa; }
-
+        .player-item:hover { background: rgba(255,255,255,0.1); }
+        .player-item.selected { background: rgba(255,255,0,0.2); border: 1px solid rgba(255,255,0,0.5); font-weight: bold; }
+        .t-color { color: #ff6b6b; } .ct-color { color: #5096ff; } .hp-text { font-size: 12px; color: #aaa; }
     </style>
 </head>
 <body>
-
-    <div id="radar-container">
-        <img id="radar-img" src="/map" alt="Radar" />
-        
-        <div id="player-panel">
-            <div id="toggle-btn" onclick="togglePanel()">&#9664;</div>
-            
-            <div id="player-list">
-                <div id="list-content"></div>
-            </div>
-        </div>
+    <div id="radar-wrapper">
+        <img id="radar-img" src="/map" alt="Map" />
+        <div id="dots-layer"></div>
     </div>
-
+    <div id="player-panel">
+        <div id="toggle-btn" onclick="togglePanel()">&#9664;</div>
+        <div id="controls">
+            <div id="btn-hide-t" class="team-btn btn-t" onclick="toggleHideTeam(2)">HIDE T</div>
+            <div id="btn-hide-ct" class="team-btn btn-ct" onclick="toggleHideTeam(3)">HIDE CT</div>
+        </div>
+        <div id="player-list"><div id="list-content"></div></div>
+    </div>
     <script>
-        let selectedId = -1;
+        let selectedId = "none";
         let isHidden = false;
+        let hiddenTeam = 0; 
+        const playerElements = {}; 
+        let bombElement = null;
 
         function togglePanel() {
             const panel = document.getElementById('player-panel');
             const btn = document.getElementById('toggle-btn');
             isHidden = !isHidden;
-            
-            if (isHidden) {
-                panel.classList.add('hidden');
-                btn.innerHTML = "&#9654;";
-            } else {
-                panel.classList.remove('hidden');
-                btn.innerHTML = "&#9664;";
-            }
+            if (isHidden) { panel.classList.add('hidden'); btn.innerHTML = "&#9654;"; }
+            else { panel.classList.remove('hidden'); btn.innerHTML = "&#9664;"; }
         }
 
-        function refreshMap() {
-            const img = document.getElementById('radar-img');
-            img.src = '/map?' + Date.now();
+        async function toggleHideTeam(team) {
+            hiddenTeam = (hiddenTeam === team) ? 0 : team;
+            updateTeamButtons();
+            document.getElementById('dots-layer').innerHTML = '';
+            for (let key in playerElements) delete playerElements[key];
         }
 
-        async function selectPlayer(id) {
-            selectedId = id;
-            await fetch('/select?id=' + id);
-            updateListUI(); 
+        function updateTeamButtons() {
+            document.getElementById('btn-hide-t').className = 'team-btn btn-t' + (hiddenTeam === 2 ? ' active' : '');
+            document.getElementById('btn-hide-ct').className = 'team-btn btn-ct' + (hiddenTeam === 3 ? ' active' : '');
         }
 
-        async function updatePlayers() {
-            if (isHidden) return;
-
+        async function updateData() {
             try {
-                const response = await fetch('/players');
-                const players = await response.json();
-                renderList(players);
-            } catch (e) {
-                console.error(e);
+                const response = await fetch('/data');
+                const data = await response.json();
+                renderMapObjects(data);
+                renderList(data.players);
+            } catch (e) { console.error(e); }
+        }
+
+        function renderMapObjects(data) {
+            const layer = document.getElementById('dots-layer');
+            const players = data.players || [];
+            const bomb = data.bomb;
+            const activeIds = new Set();
+
+            players.forEach(p => {
+                if (!p.isAlive) return;
+                if (hiddenTeam === p.team) return;
+                
+                const strId = String(p.userId);
+                activeIds.add(strId);
+                
+                let el = playerElements[strId];
+                if (!el) {
+                    el = document.createElement('div');
+                    el.className = 'player-dot ' + (p.team === 2 ? 't-team' : 'ct-team');
+                    el.innerHTML = `<div class="selected-ring"></div><div class="dot-inner"></div><div class="player-name">${p.name}</div>`;
+                    
+                    el.addEventListener('click', function(e) {
+                        e.stopPropagation();
+                        selectPlayer(strId);
+                    });
+
+                    layer.appendChild(el);
+                    playerElements[strId] = el;
+                }
+                
+                el.style.left = p.x + '%';
+                el.style.top = p.y + '%';
+                
+                if (strId === selectedId) {
+                    el.classList.add('active');
+                } else {
+                    el.classList.remove('active');
+                }
+            });
+
+            for (let id in playerElements) {
+                if (!activeIds.has(id)) {
+                    playerElements[id].remove();
+                    delete playerElements[id];
+                }
+            }
+
+            if (bomb) {
+                if (!bombElement) {
+                    bombElement = document.createElement('div');
+                    bombElement.className = 'bomb-dot';
+                    bombElement.innerText = 'C4';
+                    layer.appendChild(bombElement);
+                }
+                bombElement.style.left = bomb.x + '%';
+                bombElement.style.top = bomb.y + '%';
+                bombElement.style.display = 'flex';
+            } else {
+                if (bombElement) bombElement.style.display = 'none';
             }
         }
 
         function renderList(players) {
+            if (isHidden || !players) return;
             const container = document.getElementById('list-content');
             
-            if (!players) return;
-
             const tPlayers = players.filter(p => p.team === 2 && p.isAlive).sort((a,b) => a.userId - b.userId);
             const ctPlayers = players.filter(p => p.team === 3 && p.isAlive).sort((a,b) => a.userId - b.userId);
-
+            
             let html = '';
-
+            const buildItem = (p, colorClass) => `
+                <div class="player-item ${String(p.userId) === selectedId ? 'selected' : ''}" onclick="selectPlayer('${p.userId}')">
+                    <span class="${colorClass}">${p.name}</span>
+                    <span class="hp-text">${p.health} HP</span>
+                </div>
+            `;
             if (tPlayers.length > 0) {
                 html += '<div class="team-title">Terrorists</div>';
-                tPlayers.forEach(p => {
-                    const isSel = p.userId === selectedId ? 'selected' : '';
-                    html += `
-                        <div class="player-item ${isSel}" onclick="selectPlayer(${p.userId})">
-                            <span class="t-color">${p.name}</span>
-                            <span class="hp-text">${p.health} HP</span>
-                        </div>
-                    `;
-                });
+                tPlayers.forEach(p => html += buildItem(p, 't-color'));
             }
-
             if (ctPlayers.length > 0) {
                 html += '<div class="team-title">Counter-Terrorists</div>';
-                ctPlayers.forEach(p => {
-                    const isSel = p.userId === selectedId ? 'selected' : '';
-                    html += `
-                        <div class="player-item ${isSel}" onclick="selectPlayer(${p.userId})">
-                            <span class="ct-color">${p.name}</span>
-                            <span class="hp-text">${p.health} HP</span>
-                        </div>
-                    `;
-                });
+                ctPlayers.forEach(p => html += buildItem(p, 'ct-color'));
             }
 
-            const currentHTML = container.innerHTML;
-            if (html.length !== currentHTML.length || !currentHTML.includes('selected')) {
-                 container.innerHTML = html;
+            if (container.innerHTML !== html) {
+                container.innerHTML = html;
             }
         }
-        
-        function updateListUI() {
-             const items = document.querySelectorAll('.player-item');
-             items.forEach(el => el.classList.remove('selected'));
+
+        function selectPlayer(id) {
+            selectedId = String(id);
+            updateData(); 
         }
 
-        setInterval(refreshMap, 100);
-        setInterval(updatePlayers, 200);
+        document.getElementById('radar-wrapper').addEventListener('click', function() {
+            selectedId = "none";
+            updateData();
+        });
 
+        setInterval(updateData, 16);
     </script>
 </body>
 </html>

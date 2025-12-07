@@ -5,161 +5,307 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
-	"image"
-	imgcolor "image/color"
 	"image/png"
+	"io"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/fatih/color"
-	"github.com/fogleman/gg"
-	"github.com/golang/geo/r3"
 	ex "github.com/markus-wa/demoinfocs-golang/v5/examples"
 	"github.com/markus-wa/demoinfocs-golang/v5/pkg/demoinfocs"
 	"golang.org/x/sys/windows/registry"
 )
 
-const DOT_SIZE = 14
+type Config struct {
+	CS2Path      string `json:"cs2_path"`
+	DemoPath     string `json:"demo_path"`
+	MapName      string `json:"map_name"`
+	CustomMapImg string `json:"custom_map_img"`
+}
 
 type PlayerData struct {
-	Name       string `json:"name"`
-	Health     int    `json:"health"`
-	Team       int    `json:"team"`
-	IsAlive    bool   `json:"isAlive"`
-	UserID     int    `json:"userId"`
+	Name    string  `json:"name"`
+	Health  int     `json:"health"`
+	Team    int     `json:"team"`
+	IsAlive bool    `json:"isAlive"`
+	UserID  int     `json:"userId"`
+	X       float64 `json:"x"`
+	Y       float64 `json:"y"`
+}
+
+type BombData struct {
+	X float64 `json:"x"`
+	Y float64 `json:"y"`
+}
+
+type GameData struct {
+	Players []PlayerData `json:"players"`
+	Bomb    *BombData    `json:"bomb"`
 }
 
 var (
-	lastMapImg   []byte
-	playersData  []PlayerData
-	demoPath     string
-	mapName      string
-	initialTime  time.Time
-	highlightID  int
+	backgroundImg []byte
+	currentGame   GameData
+	gameMutex     sync.RWMutex
+	appConfig     Config
+	configFile    = "config.json"
 
-	cyan    = color.New(color.FgCyan, color.Bold)
-	green   = color.New(color.FgGreen, color.Bold)
-	yellow  = color.New(color.FgYellow)
-	red     = color.New(color.FgRed, color.Bold)
-	magenta = color.New(color.FgMagenta, color.Bold)
-	blue    = color.New(color.FgBlue)
-	white   = color.New(color.FgWhite)
+	cyan   = color.New(color.FgCyan, color.Bold)
+	green  = color.New(color.FgGreen, color.Bold)
+	yellow = color.New(color.FgYellow)
+	red    = color.New(color.FgRed, color.Bold)
+	blue   = color.New(color.FgBlue)
+	white  = color.New(color.FgWhite)
 )
 
-func main() {
-	cs2Path := detectCS2Path()
-	reader := bufio.NewReader(os.Stdin)
+type TailReader struct {
+	f *os.File
+}
 
-	if cs2Path != "" {
-		green.Printf("✓ CS2 detected: %s\n\n", cs2Path)
-		yellow.Print("Use this path? (Y/n): ")
-		response, _ := reader.ReadString('\n')
-		response = strings.TrimSpace(strings.ToLower(response))
+func (t TailReader) Read(b []byte) (int, error) {
+	for {
+		n, err := t.f.Read(b)
+		if n > 0 {
+			return n, nil
+		}
+		if err != nil && err != io.EOF {
+			return 0, err
+		}
+		time.Sleep(1 * time.Millisecond)
+	}
+}
 
-		if response == "n" || response == "no" {
-			cs2Path = ""
+func loadConfig() {
+	if _, err := os.Stat(configFile); err == nil {
+		data, err := os.ReadFile(configFile)
+		if err == nil {
+			json.Unmarshal(data, &appConfig)
 		}
 	}
+}
 
-	if cs2Path == "" {
-		yellow.Print("Enter CS2 path manually: ")
-		cs2Path, _ = reader.ReadString('\n')
-		cs2Path = strings.TrimSpace(cs2Path)
+func saveConfig() {
+	data, _ := json.MarshalIndent(appConfig, "", "  ")
+	os.WriteFile(configFile, data, 0644)
+}
+
+func prompt(label string, defaultValue string, reader *bufio.Reader) string {
+	if defaultValue != "" {
+		cyan.Printf("%s [%s]: ", label, defaultValue)
+	} else {
+		cyan.Printf("%s: ", label)
 	}
 
-	cs2Path = strings.ReplaceAll(cs2Path, "\\", "/")
-	cs2Path = strings.ReplaceAll(cs2Path, "\"", "")
+	input, _ := reader.ReadString('\n')
+	input = strings.TrimSpace(input)
 
-	cyan.Print("\nDemo filename (e.g. 'radar' or 'radar.dem'): ")
-	demoName, _ := reader.ReadString('\n')
-	demoName = strings.TrimSpace(demoName)
+	if input == "" {
+		return defaultValue
+	}
+	return input
+}
 
-	if !strings.HasSuffix(strings.ToLower(demoName), ".dem") {
-		demoName += ".dem"
+func main() {
+	loadConfig()
+	reader := bufio.NewReader(os.Stdin)
+
+	detectedPath := detectCS2Path()
+	defaultCS2 := appConfig.CS2Path
+	if defaultCS2 == "" {
+		defaultCS2 = detectedPath
 	}
 
-	demoPath = filepath.Join(cs2Path, demoName)
-	demoPath = strings.ReplaceAll(demoPath, "\\", "/")
+	appConfig.CS2Path = prompt("CS2 Path", defaultCS2, reader)
+	appConfig.CS2Path = strings.ReplaceAll(appConfig.CS2Path, "\\", "/")
+	appConfig.CS2Path = strings.ReplaceAll(appConfig.CS2Path, "\"", "")
 
-	cyan.Print("Map name (e.g. 'de_mirage'): ")
-	mapNameInput, _ := reader.ReadString('\n')
-	mapName = strings.TrimSpace(mapNameInput)
-	if mapName == "" {
-		mapName = "de_mirage"
+	appConfig.DemoPath = prompt("Demo File (e.g. radar.dem)", appConfig.DemoPath, reader)
+	if !strings.HasSuffix(strings.ToLower(appConfig.DemoPath), ".dem") {
+		appConfig.DemoPath += ".dem"
 	}
+
+	fullDemoPath := filepath.Join(appConfig.CS2Path, appConfig.DemoPath)
+	fullDemoPath = strings.ReplaceAll(fullDemoPath, "\\", "/")
+
+	defaultMap := appConfig.MapName
+	if defaultMap == "" {
+		defaultMap = "de_mirage"
+	}
+	appConfig.MapName = prompt("Map Name (e.g. de_mirage)", defaultMap, reader)
+
+	appConfig.CustomMapImg = prompt("Custom Map Image Path (optional, empty for default)", appConfig.CustomMapImg, reader)
+	appConfig.CustomMapImg = strings.ReplaceAll(appConfig.CustomMapImg, "\\", "/")
+	appConfig.CustomMapImg = strings.ReplaceAll(appConfig.CustomMapImg, "\"", "")
+
+	saveConfig()
 
 	fmt.Println()
 	blue.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
-	white.Printf("  Demo: %s\n", demoPath)
-	white.Printf("  Map:  %s\n", mapName)
+	white.Printf("  Demo: %s\n", fullDemoPath)
+	white.Printf("  Map:  %s\n", appConfig.MapName)
+	if appConfig.CustomMapImg != "" {
+		white.Printf("  Img:  %s\n", appConfig.CustomMapImg)
+	}
 	blue.Println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 	fmt.Println()
+
+	prepareMapBackground()
 
 	contents, _ := os.ReadFile("./index.html")
 	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		w.Write([]byte(contents))
 	})
-	
-	http.HandleFunc("/select", func(w http.ResponseWriter, r *http.Request) {
-		idStr := r.URL.Query().Get("id")
-		if id, err := strconv.Atoi(idStr); err == nil {
-			highlightID = id
-		}
-	})
 
 	http.HandleFunc("/map", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "image/png")
-		w.Write(lastMapImg)
+		w.Write(backgroundImg)
 	})
-	http.HandleFunc("/players", func(w http.ResponseWriter, r *http.Request) {
+
+	http.HandleFunc("/data", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		w.Header().Set("Access-Control-Allow-Origin", "*")
-		json.NewEncoder(w).Encode(playersData)
+
+		gameMutex.RLock()
+		json.NewEncoder(w).Encode(currentGame)
+		gameMutex.RUnlock()
 	})
 
 	go http.ListenAndServe(":8080", nil)
 
 	green.Println("✓ Server started at http://localhost:8080")
 	openBrowser("http://localhost:8080")
-	yellow.Println("⏳ Waiting for demo file updates...")
-	fmt.Println()
-
-	fileInfo, err := os.Stat(demoPath)
-	if err != nil {
-		initialTime = time.Now()
-	} else {
-		initialTime = fileInfo.ModTime()
-	}
+	yellow.Println("⏳ Waiting for demo file...")
 
 	for {
-		fileInfo, err := os.Stat(demoPath)
-		if err != nil {
-			time.Sleep(50 * time.Millisecond) 
-			continue
+		if _, err := os.Stat(fullDemoPath); err == nil {
+			green.Println("✓ File found! Starting live parser...")
+			startLiveParser(fullDemoPath)
+			break
+		}
+		time.Sleep(1 * time.Second)
+	}
+
+	select {}
+}
+
+func startLiveParser(path string) {
+	f, err := os.Open(path)
+	if err != nil {
+		red.Println("Error opening file:", err)
+		return
+	}
+
+	go func() {
+		defer f.Close()
+
+		tailReader := TailReader{f: f}
+		p := demoinfocs.NewParser(tailReader)
+		defer p.Close()
+
+		var mapMetadata ex.Map = ex.GetMapMetadata(appConfig.MapName)
+		mapImg := ex.GetMapRadar(appConfig.MapName)
+
+		width := 1024.0
+		height := 1024.0
+
+		if mapImg != nil {
+			width = float64(mapImg.Bounds().Dx())
+			height = float64(mapImg.Bounds().Dy())
 		}
 
-		if fileInfo.ModTime().After(initialTime) && fileInfo.Size() > 0 {
-			initialTime = fileInfo.ModTime()
-			f, err := os.Open(demoPath)
+		for {
+			more, err := p.ParseNextFrame()
 			if err != nil {
-				red.Printf("✗ Failed to open: %s\n", err)
-			} else {
-				magenta.Printf("⟳ Processing [%s]\n", time.Now().Format("15:04:05"))
-				processDemo(f)
-				f.Close()
+				time.Sleep(1 * time.Millisecond)
+				continue
 			}
+			if !more {
+				time.Sleep(1 * time.Millisecond)
+				continue
+			}
+
+			var players []PlayerData
+			var bombData *BombData
+
+			bomb := p.GameState().Bomb()
+			if bomb != nil && bomb.Carrier == nil {
+				pos := bomb.Position()
+				bx, by := mapMetadata.TranslateScale(pos.X, pos.Y)
+				bombData = &BombData{
+					X: (bx / width) * 100,
+					Y: (by / height) * 100,
+				}
+			}
+
+			for _, player := range p.GameState().Participants().Playing() {
+				if !player.IsAlive() {
+					continue
+				}
+
+				pos := player.Position()
+				x, y := mapMetadata.TranslateScale(pos.X, pos.Y)
+
+				players = append(players, PlayerData{
+					Name:    player.Name,
+					Health:  player.Health(),
+					Team:    int(player.Team),
+					IsAlive: true,
+					UserID:  player.UserID,
+					X:       (x / width) * 100,
+					Y:       (y / height) * 100,
+				})
+			}
+
+			sort.SliceStable(players, func(i, j int) bool {
+				if players[i].Team != players[j].Team {
+					return players[i].Team < players[j].Team
+				}
+				return players[i].UserID < players[j].UserID
+			})
+
+			gameMutex.Lock()
+			currentGame = GameData{
+				Players: players,
+				Bomb:    bombData,
+			}
+			gameMutex.Unlock()
 		}
-		
-		time.Sleep(50 * time.Millisecond)
+	}()
+}
+
+func prepareMapBackground() {
+	var imgBytes []byte
+
+	if appConfig.CustomMapImg != "" {
+		data, err := os.ReadFile(appConfig.CustomMapImg)
+		if err == nil {
+			imgBytes = data
+			green.Println("✓ Loaded custom map image")
+		} else {
+			red.Println("✗ Failed to load custom image, using default")
+		}
 	}
+
+	if imgBytes == nil {
+		mapRadarImg := ex.GetMapRadar(appConfig.MapName)
+		if mapRadarImg == nil {
+			red.Println("Error: Default map image not found!")
+			return
+		}
+		buffer := bytes.NewBuffer(nil)
+		png.Encode(buffer, mapRadarImg)
+		imgBytes = buffer.Bytes()
+	}
+
+	backgroundImg = imgBytes
 }
 
 func openBrowser(url string) {
@@ -248,130 +394,4 @@ func parseLibraryFolders(vdfPath string) []string {
 		}
 	}
 	return paths
-}
-
-func processDemo(f *os.File) {
-	defer func() {
-		if r := recover(); r != nil {
-		}
-	}()
-
-	p := demoinfocs.NewParser(f)
-
-	var (
-		mapMetadata ex.Map      = ex.GetMapMetadata(mapName)
-		mapRadarImg image.Image = ex.GetMapRadar(mapName)
-	)
-
-	err := p.ParseToEnd()
-	if err != nil {
-	}
-
-	if mapRadarImg == nil {
-		return
-	}
-
-	dc := gg.NewContextForImage(mapRadarImg)
-	playersData = []PlayerData{}
-
-	bomb := p.GameState().Bomb()
-	var bombPos *r3.Vector
-	if bomb != nil && bomb.Carrier == nil {
-		pos := bomb.Position()
-		bombPos = &pos
-	}
-
-	for _, player := range p.GameState().Participants().Playing() {
-		pos := player.Position()
-		x, y := mapMetadata.TranslateScale(pos.X, pos.Y)
-
-		hp := player.Health()
-		name := player.Name
-		isAlive := player.IsAlive()
-
-		playersData = append(playersData, PlayerData{
-			Name:       name,
-			Health:     hp,
-			Team:       int(player.Team),
-			IsAlive:    isAlive,
-			UserID:     player.UserID,
-		})
-
-		if !isAlive {
-			continue
-		}
-
-		if player.UserID == highlightID {
-			dc.SetRGBA(1, 1, 0, 0.4)
-			dc.DrawCircle(x, y, 35)
-			dc.Fill()
-			
-			dc.SetRGBA(1, 1, 0, 0.8)
-			dc.SetLineWidth(2)
-			dc.DrawCircle(x, y, 30)
-			dc.Stroke()
-		}
-
-		var col imgcolor.RGBA
-		switch player.Team {
-		case 2:
-			col = imgcolor.RGBA{220, 60, 60, 255}
-		case 3:
-			col = imgcolor.RGBA{60, 100, 220, 255}
-		}
-
-		dc.SetRGBA(0, 0, 0, 0.8)
-		dc.DrawCircle(x, y, DOT_SIZE/2+1)
-		dc.Fill()
-
-		dc.SetRGBA(float64(col.R)/255, float64(col.G)/255, float64(col.B)/255, 1)
-		dc.DrawCircle(x, y, DOT_SIZE/2)
-		dc.Fill()
-
-		dc.LoadFontFace("C:/Windows/Fonts/arialbd.ttf", 11) 
-		
-		nameText := name
-		if len(nameText) > 12 {
-			nameText = nameText[:12] + ".."
-		}
-		
-		textWidth, _ := dc.MeasureString(nameText)
-
-		dc.SetRGBA(0, 0, 0, 1)
-		dc.DrawString(nameText, x-textWidth/2+1, y-DOT_SIZE)
-		dc.DrawString(nameText, x-textWidth/2-1, y-DOT_SIZE)
-		dc.DrawString(nameText, x-textWidth/2, y-DOT_SIZE+1)
-		dc.DrawString(nameText, x-textWidth/2, y-DOT_SIZE-1)
-
-		if player.UserID == highlightID {
-			dc.SetRGBA(1, 1, 0, 1) 
-		} else {
-			dc.SetRGBA(1, 1, 1, 1)
-		}
-		dc.DrawString(nameText, x-textWidth/2, y-DOT_SIZE)
-	}
-
-	if bombPos != nil {
-		bx, by := mapMetadata.TranslateScale(bombPos.X, bombPos.Y)
-		dc.SetRGBA(1, 0, 0, 0.5)
-		dc.DrawCircle(bx, by, 12)
-		dc.Fill()
-		dc.SetRGBA(1, 0, 0, 1)
-		dc.DrawCircle(bx, by, 6)
-		dc.Fill()
-		dc.SetRGBA(1, 1, 1, 1)
-		dc.LoadFontFace("C:/Windows/Fonts/arialbd.ttf", 12)
-		dc.DrawString("C4", bx-8, by+4)
-	}
-
-	sort.SliceStable(playersData, func(i, j int) bool {
-		if playersData[i].Team != playersData[j].Team {
-			return playersData[i].Team < playersData[j].Team
-		}
-		return playersData[i].UserID < playersData[j].UserID
-	})
-
-	buffer := bytes.NewBuffer(nil)
-	png.Encode(buffer, dc.Image())
-	lastMapImg = buffer.Bytes()
 }
